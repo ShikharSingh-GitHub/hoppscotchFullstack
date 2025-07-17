@@ -4,28 +4,47 @@ const { v4: uuidv4 } = require("uuid");
 // Get all history entries
 const getHistory = async (req, res) => {
   try {
-    const { type, limit = 50, offset = 0 } = req.query;
+    const { type } = req.query;
 
-    let query = "SELECT * FROM request_history";
-    let params = [];
+    // Fix: Convert pagination params to integers
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    let query;
+    let params;
 
     if (type) {
-      query += " WHERE request_type = ?";
-      params.push(type);
+      query =
+        "SELECT * FROM request_history WHERE request_type = ? ORDER BY timestamp DESC";
+      params = [type];
+    } else {
+      query = "SELECT * FROM request_history ORDER BY timestamp DESC";
+      params = [];
     }
 
-    query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-    params.push(parseInt(limit), parseInt(offset));
+    // Don't use parameters for LIMIT and OFFSET to avoid type issues
+    // Only add pagination if requested
+    if (req.query.page || req.query.limit) {
+      query += ` LIMIT ${limit} OFFSET ${offset}`;
+    }
 
     const [rows] = await pool.execute(query, params);
-    res.json(rows);
+
+    res.json({
+      success: true,
+      data: rows,
+    });
   } catch (error) {
     console.error("Error fetching history:", error);
-    res.status(500).json({ error: "Failed to fetch history" });
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch history",
+    });
   }
 };
 
-// Add new history entry
+// Add history entry
 const addHistory = async (req, res) => {
   try {
     const {
@@ -54,24 +73,26 @@ const addHistory = async (req, res) => {
       url,
       JSON.stringify(headers || {}),
       body || null,
-      responseStatus,
-      responseBody,
+      responseStatus || 0,
+      responseBody || "",
       JSON.stringify(responseHeaders || {}),
-      responseTime,
+      responseTime || 0,
       requestType,
     ];
 
     await pool.execute(query, params);
 
-    // Return the created entry
-    const [newEntry] = await pool.execute(
-      "SELECT * FROM request_history WHERE id = ?",
-      [id]
-    );
-    res.status(201).json(newEntry[0]);
+    res.status(201).json({
+      success: true,
+      data: { id },
+      message: "History entry added successfully",
+    });
   } catch (error) {
-    console.error("Error adding history:", error);
-    res.status(500).json({ error: "Failed to add history entry" });
+    console.error("Error adding history entry:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to add history entry",
+    });
   }
 };
 
@@ -80,69 +101,93 @@ const deleteHistory = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await pool.execute(
-      "DELETE FROM request_history WHERE id = ?",
-      [id]
-    );
+    const query = "DELETE FROM request_history WHERE id = ?";
+    const [result] = await pool.execute(query, [id]);
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "History entry not found" });
+      return res.status(404).json({
+        success: false,
+        error: "History entry not found",
+      });
     }
 
-    res.json({ message: "History entry deleted successfully" });
+    res.json({
+      success: true,
+      message: "History entry deleted successfully",
+    });
   } catch (error) {
-    console.error("Error deleting history:", error);
-    res.status(500).json({ error: "Failed to delete history entry" });
+    console.error("Error deleting history entry:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to delete history entry",
+    });
   }
 };
 
-// Star/unstar history entry
+// Toggle star status
 const toggleStar = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get current star status
-    const [current] = await pool.execute(
+    // First get current star status
+    const [rows] = await pool.execute(
       "SELECT is_starred FROM request_history WHERE id = ?",
       [id]
     );
 
-    if (current.length === 0) {
-      return res.status(404).json({ error: "History entry not found" });
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "History entry not found",
+      });
     }
 
-    const newStarStatus = !current[0].is_starred;
+    const newStarStatus = !rows[0].is_starred;
 
+    // Update the star status
     await pool.execute(
       "UPDATE request_history SET is_starred = ? WHERE id = ?",
-      [newStarStatus, id]
+      [newStarStatus ? 1 : 0, id]
     );
 
-    res.json({ message: "Star status updated", is_starred: newStarStatus });
+    res.json({
+      success: true,
+      data: { is_starred: newStarStatus },
+      message: "Star status updated successfully",
+    });
   } catch (error) {
-    console.error("Error toggling star:", error);
-    res.status(500).json({ error: "Failed to update star status" });
+    console.error("Error toggling star status:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to toggle star status",
+    });
   }
 };
 
-// Clear all history
+// Clear history
 const clearHistory = async (req, res) => {
   try {
     const { type } = req.query;
-
     let query = "DELETE FROM request_history";
     let params = [];
 
     if (type) {
-      query += " WHERE request_type = ?";
-      params.push(type);
+      query = "DELETE FROM request_history WHERE request_type = ?";
+      params = [type];
     }
 
-    await pool.execute(query, params);
-    res.json({ message: "History cleared successfully" });
+    const [result] = await pool.execute(query, params);
+
+    res.json({
+      success: true,
+      message: `Cleared ${result.affectedRows} history entries`,
+    });
   } catch (error) {
     console.error("Error clearing history:", error);
-    res.status(500).json({ error: "Failed to clear history" });
+    res.status(500).json({
+      success: false,
+      error: "Failed to clear history",
+    });
   }
 };
 
