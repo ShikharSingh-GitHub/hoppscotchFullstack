@@ -1,39 +1,81 @@
 const pool = require("../config/database");
 const { v4: uuidv4 } = require("uuid");
 
+// Helper function to safely stringify objects
+const safeStringify = (obj) => {
+  if (obj === null || obj === undefined) {
+    return "{}";
+  }
+  if (typeof obj === "string") {
+    // If it's already a string, try to parse it first to validate
+    try {
+      JSON.parse(obj);
+      return obj;
+    } catch (e) {
+      // If it's not valid JSON, wrap it in quotes
+      return JSON.stringify(obj);
+    }
+  }
+  if (typeof obj === "object") {
+    return JSON.stringify(obj);
+  }
+  return JSON.stringify(obj);
+};
+
+// Helper function to safely parse JSON
+const safeParse = (str) => {
+  if (!str) return {};
+  if (typeof str === "object") return str;
+
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    console.error("Failed to parse JSON:", str, e);
+    return {};
+  }
+};
+
 // Get all history entries
 const getHistory = async (req, res) => {
   try {
     const { type } = req.query;
 
-    // Fix: Convert pagination params to integers
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    let query = `
+      SELECT 
+        id, method, url, headers, body, 
+        response_status, response_body, response_headers, 
+        response_time, request_type, timestamp,
+        tab_id, tab_title,
+        is_starred
+      FROM request_history 
+    `;
 
-    let query;
-    let params;
+    const params = [];
 
-    if (type) {
-      query =
-        "SELECT * FROM request_history WHERE request_type = ? ORDER BY timestamp DESC";
-      params = [type];
-    } else {
-      query = "SELECT * FROM request_history ORDER BY timestamp DESC";
-      params = [];
+    if (type && type !== "all") {
+      query += " WHERE request_type = ?";
+      params.push(type);
     }
 
-    // Don't use parameters for LIMIT and OFFSET to avoid type issues
-    // Only add pagination if requested
-    if (req.query.page || req.query.limit) {
-      query += ` LIMIT ${limit} OFFSET ${offset}`;
-    }
+    query += " ORDER BY timestamp DESC";
 
     const [rows] = await pool.execute(query, params);
 
+    // Safely parse JSON with error handling
+    const history = rows.map((row) => {
+      return {
+        ...row,
+        headers: safeParse(row.headers),
+        response_headers: safeParse(row.response_headers),
+        tabId: row.tab_id,
+        tabTitle: row.tab_title,
+      };
+    });
+
     res.json({
       success: true,
-      data: rows,
+      data: history,
+      message: "History retrieved successfully",
     });
   } catch (error) {
     console.error("Error fetching history:", error);
@@ -57,34 +99,59 @@ const addHistory = async (req, res) => {
       responseHeaders,
       responseTime,
       requestType = "REST",
+      tabId,
+      tabTitle,
     } = req.body;
+
+    console.log("Adding history entry with tab info:", {
+      tabId: tabId || "not provided",
+      tabTitle: tabTitle || "not provided",
+    });
+
+    // Debug: log the incoming headers
+    console.log("Incoming headers:", headers, "Type:", typeof headers);
+    console.log(
+      "Incoming responseHeaders:",
+      responseHeaders,
+      "Type:",
+      typeof responseHeaders
+    );
 
     const id = uuidv4();
 
+    // Ensure we're stringifying objects properly
+    const headersStr = safeStringify(headers);
+    const responseHeadersStr = safeStringify(responseHeaders);
+
+    console.log("Stringified headers:", headersStr);
+    console.log("Stringified responseHeaders:", responseHeadersStr);
+
     const query = `
       INSERT INTO request_history 
-      (id, method, url, headers, body, response_status, response_body, response_headers, response_time, request_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, method, url, headers, body, response_status, response_body, response_headers, response_time, request_type, tab_id, tab_title, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
 
     const params = [
       id,
       method,
       url,
-      JSON.stringify(headers || {}),
+      headersStr,
       body || null,
       responseStatus || 0,
       responseBody || "",
-      JSON.stringify(responseHeaders || {}),
+      responseHeadersStr,
       responseTime || 0,
       requestType,
+      tabId || null,
+      tabTitle || null,
     ];
 
     await pool.execute(query, params);
 
     res.status(201).json({
       success: true,
-      data: { id },
+      data: { id, tabId, tabTitle },
       message: "History entry added successfully",
     });
   } catch (error) {
